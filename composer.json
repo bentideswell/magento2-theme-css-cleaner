@@ -1,0 +1,8 @@
+{
+    "name": "fishpig/magento2-theme-css-cleaner",
+    "description": "Find CSS files created in the parent theme that are from disabled modules.",
+    "version": "1.0.0",
+    "bin": [
+        "bin/theme_css_cleaner"
+    ]
+}

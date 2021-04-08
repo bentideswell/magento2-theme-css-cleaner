@@ -1,0 +1,184 @@
+#!/usr/bin/env php
+<?php
+/**
+ *
+ */
+use Magento\Framework\App\Bootstrap;
+
+foreach ([
+    dirname(__DIR__), // bin
+    dirname(dirname(__DIR__)), // vendor/bin
+    dirname(dirname(dirname(dirname(__DIR__)))), // vendor/fishpig/magento2-dependency-detective/bin
+] as $basePath) {
+    $bootstrapFile = $basePath . '/app/bootstrap.php';
+
+    if (is_file($bootstrapFile)) {
+        require $bootstrapFile;
+        break;
+    }
+}
+
+if (!class_exists(Bootstrap::class)) {
+    echo "Could not find a Magento installation.";
+    exit(1);
+}
+
+$bootstrap = Bootstrap::create(BP, $_SERVER);
+$objectManager = $bootstrap->getObjectManager();
+$state = $objectManager->get('Magento\Framework\App\State')->setAreaCode('frontend');
+$moduleManager = $objectManager->get(\Magento\Framework\Module\Manager::class);
+$emptyFileContent = "// Empty File" . PHP_EOL;
+
+// Get the parent theme dirs
+$optKeyTheme = 't';
+
+if (!($opts = getopt($optKeyTheme . ':'))) {
+    echo "You must specify a theme using -t Magento/luma";
+    exit(-1);
+}
+
+$theme = $opts[$optKeyTheme];
+if (!($themeDir = get_theme_dir($theme))) {
+    echo $theme . ' does not exist.' . PHP_EOL;
+    exit(-1);
+}
+
+if ($parentThemes = get_parent_theme_dirs($theme)) {
+    array_shift($parentThemes);
+}
+
+if (!$parentThemes) {
+    echo "Unable to find any parent themes for " . $opts[$optKeyTheme] . PHP_EOL;
+    exit(-1);
+}
+
+// These files extend files from modules that have been disabled/uninstalled
+$dirtyFiles = [];
+
+foreach ($parentThemes as $parentTheme) {
+    if (!($files = scandir($parentTheme))) {
+        continue;
+    }
+    
+    foreach ($files as $module) {
+        $moduleDir = $parentTheme . '/' . $module;
+        
+        if (is_dir($moduleDir) && strpos($module, '_') !== false) {
+            if (!$moduleManager->isEnabled($module)) {
+                $sourceDir = $moduleDir . '/web/css/source';
+
+                if (!($sourceFiles = get_less_files_from_dir($sourceDir))) {
+                    continue;
+                }
+
+                // Cleanup source files
+                foreach ($sourceFiles as $key => $sourceFile) {
+                    $dirtyFiles[substr($sourceFile, strlen($parentTheme . '/'))] = true;
+                }
+            }
+        }
+    }
+}
+
+if (!$dirtyFiles) {
+    echo "There are no files from disabled modules that can removed.";
+    exit(1);
+}
+
+$dirtyFiles = array_keys($dirtyFiles);
+
+// Go through the dirty files and create empty copies in specified $theme
+foreach($dirtyFiles as $dirtyFile) {
+    $targetFile = $themeDir . '/' . $dirtyFile;
+    
+    if (is_file($targetFile)) {
+        if (filesize($targetFile) === 0) {
+            unlink($targetFile);
+        }
+    }
+    
+    if (!is_file($targetFile)) {
+        $targetDir = dirname($targetFile);
+        
+        if (!is_dir($targetDir)) {
+            mkdir($targetDir, 0755, true);
+        }
+        
+        echo 'Creating ' . $dirtyFile . ' ';   
+
+        touch($targetFile);
+        file_put_contents($targetFile, $emptyFileContent);
+        
+        echo PHP_EOL;
+    } elseif (filesize($targetFile)) {
+        echo $dirtyFile . ' exists in your theme but is not empty.' . PHP_EOL;
+    }
+}
+
+/**
+ * Get all .less files in $baseDir recursively
+ *
+ * @param string $baseDir
+ * @return array
+ */
+function get_less_files_from_dir($baseDir)
+{
+    $lessFiles = [];
+    $dirIt = new RecursiveDirectoryIterator($baseDir);
+    $it = new RecursiveIteratorIterator($dirIt, RecursiveIteratorIterator::SELF_FIRST);
+
+    if ($it) {
+        foreach ($it as $file) {
+            $file = (string)$file;
+            
+            if (substr($file, -5) === '.less') {
+                $lessFiles[] = $file;
+            }
+        }
+    }
+
+    return $lessFiles;
+}
+
+/**
+ * Recursively get parent theme dirs
+ *
+ * @param string $theme
+ * @return array
+ */
+function get_parent_theme_dirs($theme)
+{
+    if (!($themeDir = get_theme_dir($theme))) {
+        return [];
+    }
+
+    $themeXmlFile = $themeDir . '/theme.xml';
+    $dirs = [$themeDir];
+
+    if (!is_file($themeXmlFile)) {
+        return $dirs;
+    }
+    
+    $xml = simplexml_load_file($themeXmlFile);
+    
+    if (!($parentTheme = (string)($xml->parent))) {
+        return $dirs;
+    }
+    
+    return array_merge($dirs, get_parent_theme_dirs($parentTheme));
+}
+
+/**
+ * Get the directory for $theme
+ *
+ * @param string $theme
+ * @return string|false
+ */
+function get_theme_dir($theme)
+{
+    $themeDir = \Magento\Framework\App\ObjectManager::getInstance()
+        ->get(ComponentRegistrar::class)
+            ->getPath(ComponentRegistrar::THEME, 'frontend/' . $theme); 
+            
+    return is_file($themeDir . '/theme.xml') ? $themeDir : false;
+}
